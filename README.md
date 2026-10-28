@@ -13,7 +13,7 @@ tracks it over time, and gives every client a kanban board for hardening work.
 
 ## Live demo
 
-**https://YOUR-DEMO-URL** — read-only, fictional clients. The sign-in page shows the demo login
+**https://watchtower-public-mackiser.vercel.app** — read-only, fictional clients. The sign-in page shows the demo login
 (`demo@watchtower.dev` / `watchtower-demo`) and fills it in for you.
 
 ## What it does
