@@ -1,5 +1,6 @@
 import type { Request } from "express";
 import cron from "node-cron";
+import { isDemo } from "./demoMode.js";
 import { prisma } from "./prisma.js";
 
 // Structured security-event logging for a security product. Emits one JSON line per event to
@@ -41,7 +42,19 @@ export function clientIp(req: Request): string {
   return req.ip ?? "unknown";
 }
 
-export function audit(event: AuditEvent, fields: Record<string, unknown> = {}): void {
+// Public demo: its one shared login is an admin, so any visitor can open the Audit Log. The trail
+// must therefore hold nothing that identifies visitors — no IPs, and no emails from failed attempts
+// (a visitor may type their real address into the form). Successful sign-ins and sign-outs can only
+// be the demo account itself, so those keep their email.
+const DEMO_KEEPS_EMAIL = new Set<AuditEvent>(["login.success", "logout"]);
+
+export function redactForDemo(event: AuditEvent, fields: Record<string, unknown>): Record<string, unknown> {
+  const { ip: _ip, email, ...rest } = fields;
+  return DEMO_KEEPS_EMAIL.has(event) ? { ...rest, email } : rest;
+}
+
+export function audit(event: AuditEvent, rawFields: Record<string, unknown> = {}): void {
+  const fields = isDemo() ? redactForDemo(event, rawFields) : rawFields;
   // console.log so it lands on stdout (info), not stderr — these are normal operational events.
   console.log(JSON.stringify({ audit: event, ts: new Date().toISOString(), ...fields }));
   // Also persist to the AuthEvent table so admins can read the trail from the UI (the

@@ -88,7 +88,9 @@ would look signed out. Backup and restore notes are in [docs/backups.md](docs/ba
 `.env.demo`, then `docker compose -f docker-compose.demo.yml --env-file .env.demo up -d --build`
 (app on :4100). `DEMO_SEED=1` seeds the demo user and clients on boot, refuses every write except
 sign-in/out, and keeps the data fresh without a scheduler (the first signed-in request each day
-appends a new scan).
+appends a new scan). Because the shared demo login is an admin who can read the Audit Log, demo
+mode also keeps the audit trail free of anything that identifies a visitor: no IP addresses, and
+no emails from failed sign-ins.
 
 ### Free public demo (Vercel + Neon)
 

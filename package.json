@@ -20,7 +20,8 @@
     "prisma:migrate": "npm run prisma:migrate --workspace apps/api",
     "seed:admin": "npm run seed:admin --workspace apps/api",
     "seed:demo": "npm run seed:demo --workspace apps/api",
-    "demo:setup": "node --env-file=.env.demo node_modules/prisma/build/index.js generate --schema=apps/api/prisma/schema.prisma && node --env-file=.env.demo node_modules/prisma/build/index.js migrate deploy --schema=apps/api/prisma/schema.prisma && node --env-file=.env.demo node_modules/tsx/dist/cli.mjs apps/api/src/seedAdmin.ts && node --env-file=.env.demo node_modules/tsx/dist/cli.mjs apps/api/src/seedDemo.ts"
+    "demo:setup": "node --env-file=.env.demo node_modules/prisma/build/index.js generate --schema=apps/api/prisma/schema.prisma && node --env-file=.env.demo node_modules/prisma/build/index.js migrate deploy --schema=apps/api/prisma/schema.prisma && node --env-file=.env.demo node_modules/tsx/dist/cli.mjs apps/api/src/seedAdmin.ts && node --env-file=.env.demo node_modules/tsx/dist/cli.mjs apps/api/src/seedDemo.ts",
+    "demo:scrub-audit": "node --env-file=.env.demo node_modules/tsx/dist/cli.mjs apps/api/src/scrubDemoAudit.ts"
   },
   "devDependencies": {
     "typescript": "^5.6.3"
