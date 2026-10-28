@@ -97,7 +97,8 @@ to the static frontend, with a free Neon Postgres behind it.
 
 1. Create a Neon project. You need its **direct** connection string and its **pooled** one.
 2. `cp .env.demo.example .env.demo`, set `DATABASE_URL` to the direct string, then run
-   `npm run demo:setup` once. It builds, applies migrations and seeds the demo user and clients.
+   `npm run demo:setup` once from the repo root (after `npm install`). It generates the Prisma
+   client, applies migrations and seeds the demo user and clients.
 3. Import the repo into Vercel and set these environment variables:
    `DATABASE_URL` (the pooled string plus `&pgbouncer=true&connection_limit=1`), `SESSION_SECRET`,
    `MFA_ENCRYPTION_KEY`, `DEMO_SEED=1`, `VITE_DEMO_EMAIL`, `VITE_DEMO_PASSWORD`.
