@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+**/dist
+**/build
+.git
+.env
+.env.*
+**/prisma/generated
+# design-hook caches; inside prisma/migrations Prisma mistakes the dir for a migration (P3015)
+**/.impeccable
+*.log

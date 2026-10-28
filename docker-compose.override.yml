@@ -1,0 +1,8 @@
+# LOCAL DEV ONLY — docker compose auto-applies this override when no -f flags are given.
+# Publishes Postgres on loopback so `npm run dev:api` (DATABASE_URL=localhost:5432) and the
+# Prisma CLI can reach the dev database. Production deploys should pass explicit -f files so
+# this never applies — production Postgres stays unpublished (see docker-compose.yml).
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"

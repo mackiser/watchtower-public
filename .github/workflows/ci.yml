@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build-test-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # prisma generate (part of the api build) requires DATABASE_URL to be defined even though it
+      # never connects — a placeholder is enough (same trick as the Dockerfile).
+      - run: npm run build
+        env:
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+
+      - run: npm test
+
+      # Fail the build on any vulnerability in PRODUCTION dependencies. Dev-only tooling advisories
+      # (vite/vitest — dev-server-only, never shipped) are tracked separately and don't gate CI.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=low

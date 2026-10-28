@@ -1,0 +1,26 @@
+node_modules/
+dist/
+build/
+.env
+.env.*
+!.env.example
+!.env.demo.example
+*.log
+.DS_Store
+Thumbs.db
+apps/api/prisma/generated/
+coverage/
+.vscode/
+.claude/scheduled_tasks.lock
+
+# Local Claude Code settings — machine-specific, may contain secrets (never commit)
+.claude/settings.local.json
+.claude/skills/
+
+# Impeccable design-tool cache (local)
+.impeccable/
+apps/web/.impeccable/
+
+# Obsidian editor artifacts
+.obsidian/
+Untitled.canvas

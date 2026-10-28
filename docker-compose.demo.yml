@@ -1,0 +1,63 @@
+# Watchtower demo — a self-contained stack with fake sample data. Run it with
+#   docker compose -f docker-compose.demo.yml --env-file .env.demo up -d --build
+# (see .env.demo.example). It can run alongside the main stack on the same Docker host:
+#   - its own compose project (watchtower-demo-*), image build, and db volume
+#   - app on host port 4100 (the main stack keeps 4000)
+#   - DEMO_SEED=1: the entrypoint seeds a demo user + fictional clients on boot, the API refuses
+#     every write (read-only demo), and the login page shows the demo credentials
+name: watchtower-demo
+
+services:
+  db:
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: watchtower
+      # Required, no fallback — same reasoning as the main stack's compose file.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in the env file}
+      POSTGRES_DB: watchtower
+    volumes:
+      - demo-db-data:/var/lib/postgresql/data
+    # No published ports — the demo DB holds fake data only, but there's no reason to expose it.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U watchtower"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      args:
+        # Inlined into the frontend bundle so the login page can show the demo credentials.
+        VITE_DEMO_EMAIL: ${DEMO_ADMIN_EMAIL:-demo@watchtower.dev}
+        VITE_DEMO_PASSWORD: ${DEMO_ADMIN_PASSWORD:?DEMO_ADMIN_PASSWORD is required}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://watchtower:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in the env file}@db:5432/watchtower
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required (openssl rand -hex 32)}
+      MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?MFA_ENCRYPTION_KEY is required (openssl rand -hex 32)}
+      PORT: 4000
+      NODE_ENV: production
+      # Plain-HTTP localhost by default — set COOKIE_SECURE=true behind HTTPS.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Boot-time seeding of the demo user + fake sample clients (see docker-entrypoint.sh).
+      DEMO_SEED: "1"
+      ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:-demo@watchtower.dev}
+      ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:?DEMO_ADMIN_PASSWORD is required}
+      ADMIN_NAME: ${DEMO_ADMIN_NAME:-Demo User}
+    ports:
+      - "4100:4000"
+    # Same container-level liveness check as the main stack.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||4000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  demo-db-data:

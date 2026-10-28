@@ -1,0 +1,305 @@
+// Watchtower — database schema.
+// Per client: Qualys scans -> QualysSnapshot (append-only series), ISPM controls -> IspmControl
+// (current state), hardening work -> Task rows.
+
+generator client {
+  provider      = "prisma-client-js"
+  output        = "./generated"
+  // rhel-openssl-3.0.x is the engine Vercel's Linux functions load; "native" covers local dev/Docker.
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+// App-level key/value settings editable from the admin UI (currently the Qualys sync schedule).
+// ponytail: generic KV, not typed columns — two keys today, a table per setting would be silly.
+model Setting {
+  key   String @id
+  value String
+}
+
+enum IspmSeverity {
+  High
+  Medium
+  Low
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum TaskLinkType {
+  ISPM
+  QUALYS
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(MEMBER)
+  // Set when an admin picks the password (initial invite or reset) — the temporary password is
+  // known to two people, so the account holder must replace it before using the app.
+  mustChangePassword Boolean @default(false)
+  // ----- TOTP multi-factor auth (mandatory unless exempted) -----
+  mfaEnabled   Boolean  @default(false)
+  // Admin-granted waiver from the mandatory-MFA enrollment gate — for test accounts and
+  // short-lived demo logins. Does NOT disable MFA: an exempt user can still enroll, and if they
+  // do, the second factor is still required at sign-in. Granting/revoking is audit-logged.
+  mfaExempt    Boolean  @default(false)
+  // Base32 TOTP secret, AES-256-GCM encrypted at rest (see lib/mfa.ts). Set-but-mfaEnabled=false
+  // during pending enrollment; the account is only actually protected once mfaEnabled flips true.
+  totpSecret   String?
+  // Highest TOTP time-step already accepted at login — rejects replay of a code inside its window.
+  totpLastStep Int?
+  // How long a browser stays "MFA-satisfied" after a successful check before being prompted again
+  // on sign-in. 0 = always prompt. Hard-capped at 60 in the API.
+  mfaGraceMinutes Int   @default(0)
+  // Stamped in finalizeLogin on every successful sign-in (password, MFA, trusted-device alike).
+  // Null = never signed in (fresh invite) or predates this feature.
+  lastLoginAt  DateTime?
+  // ----- brute-force lockout (see registerAuthFailure in routes/auth.ts) -----
+  // Consecutive failed password/MFA attempts since the last success. At the cap the account
+  // locks for a cooldown window; both reset in finalizeLogin and via admin unlock.
+  failedLoginCount Int @default(0)
+  lockedUntil      DateTime?
+  createdAt    DateTime @default(now())
+
+  mfaRecoveryCodes  MfaRecoveryCode[]
+  mfaTrustedDevices MfaTrustedDevice[]
+  assignedTasks     Task[]
+}
+
+// One row per single-use recovery code (the "lost my authenticator" backup). Stored as a plain
+// sha256 of the normalized code — codes are high-entropy random, so a slow hash buys nothing and
+// an indexed lookup is simpler. Consumed by stamping usedAt.
+model MfaRecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// A browser that completed MFA and is trusted (skips the MFA step on sign-in) until expiresAt.
+// The cookie carries a random token; only its sha256 is stored, so a DB leak can't mint sessions.
+model MfaTrustedDevice {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String
+  expiresAt DateTime
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([tokenHash])
+}
+
+// Persisted security audit trail — the same events lib/audit.ts emits to stdout, kept in the DB
+// so admins can answer "who signed in / failed / got locked out, when, from where" from the UI
+// (the access-log artifact an auditor asks for). Pruned after a year (initAuditPrune).
+model AuthEvent {
+  id        String   @id @default(cuid())
+  event     String
+  userId    String?
+  email     String?
+  ip        String?
+  // JSON string of any remaining event fields (role, route, reason, …) — display-only.
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model Client {
+  id                String    @id @default(cuid())
+  name              String    @unique
+  ispmNotApplicable Boolean   @default(false)
+  // Soft delete: archived clients keep their full history but drop out of the Overview/triage
+  // list by default (see GET /clients ?includeArchived=true, used only by the admin clients page).
+  archivedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  // Qualys auto-sync: the asset tag identifying this client in the Qualys instance.
+  // null = not synced (manual/legacy Qualys data only).
+  qualysTag         String?
+  qualysLastSyncAt  DateTime?
+  qualysSyncError   String? // last sync failure message; null = last sync OK (or never synced)
+  // Per-client posture goals (Client page → Goals, admin only). null = use the shared default
+  // from DEFAULT_CLIENT_GOALS rather than storing a copy of it, so changing the default later
+  // moves every client that never set its own. See scoring.ts for why the composite blend is
+  // deliberately NOT per-client.
+  vulnTargetPerAsset Float? // avg active vulns/asset considered on target (default 10)
+  ispmTargetPct      Float? // weighted ISPM compliance % considered on target (default 75)
+
+  qualysSnapshots QualysSnapshot[]
+  qualysVulns     QualysVuln[]
+  ispmControls    IspmControl[]
+  ispmSnapshots   IspmSnapshot[]
+  tasks           Task[]
+}
+
+// One row per weekly Qualys scan. This is the time series — never overwritten, only appended to
+// (mirrors appendQualysRow() in the original app).
+model QualysSnapshot {
+  id        String    @id @default(cuid())
+  clientId  String
+  client    Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Nullable only for legacy migrated rows whose source sheet had no recognizable date column;
+  // every snapshot created via the Weekly Update form has one.
+  date      DateTime?
+  active    Int
+  crit      Int
+  high      Int
+  med       Int
+  low       Int
+  fix030    Int
+  fix3060   Int
+  fix6090   Int
+  assets    Int
+  reboot    Int
+  createdAt DateTime  @default(now())
+
+  @@index([clientId, date])
+}
+
+// Per-QID detection counts for one client — current state, replaced wholesale each sync (the
+// same idiom as IspmControl below). Deliberately has no `date`: history is out of scope, and a
+// date column would invite someone to start appending. "As of" is Client.qualysLastSyncAt.
+//
+// These rows are free: qualysSync already parses every per-host detection row to build
+// QualysSnapshot's totals and then discards them. Same Confirmed-only filter applies, so
+// sum(detectionCount) reconciles with QualysSnapshot.active.
+model QualysVuln {
+  clientId       String
+  client         Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  qid            String
+  severity       Int // 1-5, as reported on the detection rows
+  // Distinct hosts affected — the ranking key. A sev-4 on 95 machines outranks a sev-5 on one.
+  assetCount     Int
+  // Detection rows, which is what Qualys's own VULNERABILITY COUNT column shows. Higher than
+  // assetCount when one QID is found on several ports of the same host.
+  detectionCount Int
+
+  // Composite natural key: one row per client per QID. Makes the per-sync replace idempotent
+  // without a surrogate id (IspmControl needs a cuid only because two controls can share a name).
+  @@id([clientId, qid])
+  @@index([clientId, assetCount])
+}
+
+// Qualys KnowledgeBase metadata, cached GLOBALLY by QID rather than per client — a QID's write-up
+// is identical for every client, and the same Windows/Chrome QIDs recur across most of them, so
+// keying on QID dedupes the fetch across the whole portfolio.
+//
+// Deliberately NOT related to QualysVuln by a foreign key: a QID is counted the moment a scan
+// sees it, which is before its KB entry has been fetched. An FK would reject that write. The two
+// tables are joined in application code and a missing entry is a normal, handled state.
+model QualysKbEntry {
+  qid         String   @id
+  title       String
+  severity    Int
+  category    String
+  patchable   Boolean
+  cves        String // comma-joined CVE ids, "" = none. Display-only, never queried.
+  // Qualys ships these as HTML. They are stripped to plain text at cache time rather than
+  // rendered as markup — see stripQualysHtml(). Storing only the stripped form keeps a
+  // third-party HTML injection path out of the app entirely.
+  diagnosis   String
+  consequence String
+  solution    String
+  // Watchtower-authored context, never touched by the KnowledgeBase fetch. This is where a
+  // hand-written remediation note lives so it survives the day the API entitlement lands.
+  notes       String   @default("")
+  // True once the KnowledgeBase API has populated this row. Load-bearing in two places:
+  // refreshKbEntries() only treats a row as "already cached" when it's true (so a hand-titled QID
+  // is still fetched properly if the entitlement is granted later), and the UI uses it to say
+  // whether the write-up is Qualys's or ours.
+  fromQualys  Boolean  @default(false)
+  fetchedAt   DateTime @updatedAt
+}
+
+// Current ISPM control compliance state — a point-in-time snapshot, not a series. A Weekly
+// Update replaces the full set for a client (delete-all + insert, matching the original
+// rebuildIspmSheet() semantics) rather than appending, so history isn't kept per control.
+model IspmControl {
+  id        String       @id @default(cuid())
+  clientId  String
+  client    Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  control   String
+  category  String
+  group     String
+  severity  IspmSeverity
+  compliant Boolean
+  updatedAt DateTime     @updatedAt
+
+  @@index([clientId])
+}
+
+// Aggregate ISPM state at each Weekly Update — the time series behind the composite-score
+// trend chart. Deliberately NOT per-control history (that would be a different, bigger
+// feature); IspmControl above stays the current-state source of truth.
+model IspmSnapshot {
+  id                    String   @id @default(cuid())
+  clientId              String
+  client                Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  date                  DateTime
+  totalCount            Int
+  compliantCount        Int
+  weightedCompliancePct Float
+  createdAt             DateTime @default(now())
+
+  @@index([clientId, date])
+}
+
+model Task {
+  id          String        @id @default(cuid())
+  clientId    String
+  client      Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  title       String
+  status      TaskStatus    @default(TODO)
+  note        String        @default("")
+  priority    TaskPriority  @default(MEDIUM)
+  // Target date (date-only, stored midnight UTC). Overdue = dueDate < today && not Done.
+  dueDate     DateTime?
+  // Deleting a user unassigns their tasks rather than deleting them (SetNull).
+  assigneeId  String?
+  assignee    User?         @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+  linkType    TaskLinkType?
+  linkRef     String        @default("")
+  createdAt   DateTime      @default(now())
+  completedAt DateTime?
+
+  @@index([clientId, status])
+  @@index([assigneeId])
+}
+
+// Session store for connect-pg-simple (express-session). Table name/shape must match what
+// connect-pg-simple expects; see apps/api/src/lib/session.ts.
+model Session {
+  sid    String   @id @db.VarChar
+  sess   Json
+  expire DateTime @db.Timestamp(6)
+
+  @@index([expire])
+  @@map("session")
+}

@@ -1,0 +1,68 @@
+services:
+  db:
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-watchtower}
+      # Password for a *fresh* volume. Postgres only reads this on first init — rotating it here
+      # does not change an already-provisioned volume's password (ALTER USER for that). Required,
+      # no fallback: a silent "watchtower" default could ship a guessable DB password on a new
+      # deployment. Existing volumes keep whatever password they were initialized with.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in the env file}
+      POSTGRES_DB: ${POSTGRES_DB:-watchtower}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    # Not published to the host: the app reaches Postgres over the compose network at db:5432. Exposing 5432 would put the database on the LAN/internet for no reason. Use
+    # `docker compose exec db psql` if you need a shell.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-watchtower}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-watchtower}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in the env file}@db:5432/${POSTGRES_DB:-watchtower}
+      # Required — no fallback. A guessable default secret here would silently ship to production.
+      # Both live in your .env file. Generate with `openssl rand -hex 32`.
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required (openssl rand -hex 32)}
+      # Encrypts TOTP/MFA secrets at rest. Keep it stable — losing/changing it locks out every
+      # enrolled user (admin-resettable). Required, no fallback.
+      MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?MFA_ENCRYPTION_KEY is required (openssl rand -hex 32)}
+      PORT: 4000
+      NODE_ENV: production
+      # Defaults to secure cookies (requires HTTPS — correct for a proxied production deploy). Set
+      # COOKIE_SECURE=false in the env file for a plain-HTTP local/LAN deployment (no
+      # TLS-terminating reverse proxy), otherwise login will silently fail.
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      # Optional session-lifetime overrides (defaults: 30 min idle, 12 h absolute). See lib/session.ts.
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
+      SESSION_MAX_HOURS: ${SESSION_MAX_HOURS:-12}
+      # Qualys daily sync — optional (blank = sync disabled, app still boots). Credentials are a
+      # dedicated non-SSO Qualys API service account. See lib/qualysSync.ts.
+      QUALYS_API_URL: ${QUALYS_API_URL:-https://qualysapi.qualys.com}
+      QUALYS_USERNAME: ${QUALYS_USERNAME:-}
+      QUALYS_PASSWORD: ${QUALYS_PASSWORD:-}
+      QUALYS_SYNC_TZ: ${QUALYS_SYNC_TZ:-America/New_York}
+      # KnowledgeBase lookups use their own version — see .env.example.
+      QUALYS_KB_API_VERSION: ${QUALYS_KB_API_VERSION:-2.0}
+    ports:
+      - "4000:4000"
+    # Container-level liveness: lets Docker mark (and with restart policies, replace) an app
+    # process that's running but no longer serving — the deploy script's one-shot /api/health
+    # poll only covers deploy time. Node 20's global fetch, no curl needed in the slim image.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||4000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  db-data:
+
